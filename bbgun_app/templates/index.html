@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Weapon detector</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@4/dark.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/fcmam5/nightly.js@v1.0/dist/nightly.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js"></script>
+</head>
+<style>
+    body {
+        background-color: #121212; /* темный фон */
+        color: #ffffff; /* светлый текст */
+        font-family: 'Arial', sans-serif; /* шрифт */
+        padding: 15px;
+    }
+
+    form {
+        background-color: #1e1e1e; /* фон формы */
+        border-radius: 5px;
+        padding: 15px;
+    }
+
+    input[type="file"], .btn {
+        background-color: #333333; /* фон элементов формы */
+        color: #ffffff;
+        border: 1px solid #555555;
+    }
+
+    .btn:hover {
+        background-color: #0066ff; /* цвет кнопки при наведении */
+    }
+
+    #result-frame {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-start;
+    }
+
+     #result-frame img {
+        max-width: 350px;
+        max-height: 350px;
+        margin-right: 10px;
+        margin-bottom: 10px;
+    }
+</style>
+
+<body>
+
+<form id="uploadForm">
+    <h3 style="padding-bottom: 25px">Загрузите .mp4</h3>
+    <input type="file" class="form-control form-control-lg" id="mp4-file" accept=".mp4" name="file"><br>
+    <button type="button" class="btn btn-primary" onclick="uploadFile()">Отправить</button><br><br>
+    <div id="files-list"></div><br><br>
+    <h3 id="results-title" hidden>Результаты:</h3><br>
+    <div id="result-frame"></div>
+</form>
+
+<script>
+    let ws;
+    const guid = generateGUID();
+
+    async function connectWebSocket() {
+        return new Promise((resolve, reject) => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                resolve(ws);
+            } else {
+                var ws = new WebSocket("ws://" + window.location.hostname + ":8000/ws");
+                ws.onopen = function () {
+                    console.log("WebSocket is open now.");
+                    resolve(ws);
+                };
+
+                ws.onmessage = function (event) {
+                    const frameSrc = 'data:image/jpeg;base64,' + event.data;
+                    const resultFrame = document.getElementById("result-frame");
+
+                    const img = document.createElement('img');
+                    img.src = frameSrc;
+
+                    resultFrame.appendChild(img);
+                }
+
+                ws.onerror = function (error) {
+                    console.error("WebSocket error observed:", error);
+                    reject(error);
+                };
+
+                ws.onclose = function () {
+                    console.log("WebSocket connection closed.");
+                    ws = null;
+                };
+            }
+        })
+    };
+
+    document.addEventListener("DOMContentLoaded", function () {
+        connectWebSocket();
+        document.getElementById("mp4-file").value = "";
+        getAndShowFiles();
+    });
+
+    window.addEventListener("beforeunload", async function(event) {
+    if (ws) {
+        if (ws.readyState !== WebSocket.OPEN) {
+            try {
+                await connectWebSocket();
+            } catch (error) {
+                console.error('Ошибка подключения WebSocket:', error);
+            }
+        }
+
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'DELETE', guid: guid }));
+            ws.close();
+        }
+    }
+});
+
+    async function uploadFile() {
+        const fileInput = document.getElementById("mp4-file");
+        if (fileInput.files.length === 0) {
+            showAlert('Добавьте файл');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('guid', guid);
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                getAndShowFiles();
+            } else {
+                showAlert("Ошибка загрузки файла");
+            }
+        } catch (error) {
+           showAlert(error);
+        }
+    }
+
+   async function getAndShowFiles() {
+        try {
+            const filesList = document.getElementById('files-list');
+            filesList.innerHTML = '';
+
+            const response = await fetch('/files?guid=' + guid);
+            const data = await response.json();
+            const files = data.files;
+
+            files.forEach(file => {
+                const fileLink = document.createElement('a');
+                fileLink.href = `temp_files/${file}`;
+                fileLink.textContent = file;
+                fileLink.target = '_blank';
+
+                const analyzeButton = document.createElement('button');
+                analyzeButton.textContent = 'Анализировать';
+                analyzeButton.className = 'btn btn-primary';
+                analyzeButton.style.marginLeft = '15px';
+                analyzeButton.onclick = function(event) {
+                    event.preventDefault();
+                    analyzeFile(file);
+                };
+
+                const fileContainer = document.createElement('div');
+                fileContainer.appendChild(fileLink);
+                fileContainer.appendChild(analyzeButton);
+
+                filesList.appendChild(fileContainer);
+            });
+        } catch (error) {
+            showAlert(error);
+        }
+   }
+
+    async function analyzeFile(fileName) {
+        try {
+            const websocket = await connectWebSocket();
+            if (websocket.readyState === WebSocket.OPEN) {
+                const message = JSON.stringify({ action: "VIEW", guid: fileName });
+                websocket.send(message);
+                const resultFrame = document.getElementById("results-title");
+                resultFrame.hidden = false;
+            }
+            else {
+                showAlert('Ошибка WebSocket: WebSocket закрыт')
+            }
+        } catch (error) {
+            showAlert("Ошибка WebSocket:", error);
+        }
+    }
+
+    function deleteFile(fileName) {
+        fetch(`/files/delete/${filename}`, {
+            method: 'DELETE',
+        })
+        .then(response => response.json())
+        .catch(error => showAlert(error));
+    }
+
+    function showAlert(message) {
+        Swal.fire({
+            title: message,
+            icon: "error"
+        });
+    }
+
+    function generateGUID() {
+        function s4() {
+            return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+        }
+        return s4() + s4() + '-' + s4() + '-' + s4() + '-' +
+               s4() + '-' + s4() + s4() + s4();
+    }
+</script>
+
+</body>
+</html>
